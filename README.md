@@ -8,13 +8,40 @@ with a pointer or smart pointer parameter which then restricts access unless tha
 (non-null).
 
 ```cpp
+void function() {
+    std::experimental::ptr_guard<std::unique_ptr<Apple>> anApple(new Apple);
+    
+    // ...
+    
+    // Maybe this statement is nested in complex control flow.
+    anApple.reset();
+    
+    // ...
+    
+    // If anApple was a unique_ptr here we might write,
+    //     anApple->setColor("Red");
+    //     eat(*anApple);
+    // But we forgot the pointer may have been reset so the program may crash here.
+
+    // With the ptr_guard we pretty much have to write this.
+    anApple.call([](Apple& apple) {
+            apple.setColor("Red");
+            eat(apple);
+        });
+}
+```
+
+Another example on a function. In this case the implication is the function accepts a nullptr for
+the anApple parameter.
+
+```cpp
 #include <ptr_guard.h>
 
 // This function will return "Red" when called with an Apple, and "Green" when
 // invoked with a nullptr (it also modifies the Apple parameter supplied).
 std::string function(std::experimental::ptr_guard<Apple*> anApple) {
     anApple.call(
-        [](const Apple& apple) {
+        [](Apple& apple) {
             apple.setColor("Red");
         });
     return anApple.call_or(
