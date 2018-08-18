@@ -1,0 +1,352 @@
+A Proposal for a Pointer Guard
+==============================
+Author: Nicolas Croad
+Date: 18 September 2018
+
+1. Introduction and Motivation
+------------------------------
+C++ inherited its pointer syntax pretty much directly from is C basis, including the already well known NULL
+pointer and associated pitfalls. Following its introduction into the ALGOL68 language the issue of de-referencing
+a well defined but presently NULL (or 0 or nullptr) pointer has been responsible for thousands of software bugs.
+
+While it is trivial to check a particular pointer before de-referencing it the problem of maintaining a system where
+every potentially de-reference of a potentially NULL pointer is checked causes repetitition and requires
+careful practice. Other languages (in particular Rust) have demonstrated that the compiler in a strongly typed
+language is often able to enforce many correctness traits of a program during compilation, with the right library
+support.
+
+The proposal here is for a pointer like type to be added to the standard library which restricts access to an
+underlying pointer except when going through a conditional test that this dereference will be valid. When using this
+type this demonstrates that any wrapped pointer is not being de-referenced while NULL by a compiling program. In
+addition it documents correct state of a program and correct usage of certain functions, implying for example that a
+particular class member may be NULL in certain program states or that a certain function parameter may be expected
+to accept a NULL pointer as a particular parameter.
+
+2. Alternative Approaches
+-------------------------
+Many different approaches have been used to address this issue. The first is all the quality processes which go into
+maintaining a code base, including code review and testing/automated testing. In practice this seems slightly more
+effective than doing it without the code review and testing/automated testing but is essentially a variant of being
+vigilant about access to pointers.
+Secondly as an extension to just code review, and in extreme cases sometimes, code bases may be refactored to
+eliminate or nearly eliminate the use of pointers from the program all together. This has been somewhat more
+successfull in practice but often requires significant effort in reviewing a non-conforming code base against such
+a standard.
+More recently a similar concept to the rust Option enum (on which this proposal is based) was added to C++ in the
+form of the std::optional. This is however somewhat limited as it uses similar semantics to those of a pointer
+allowing un-checked use of the underlying value of the option as the programmer sees fit.
+
+3. Discussion
+-------------
+The proposal is for some fairly simple additional templates to the C++ Standard Library. These will in many ways be
+similar to pointers, or the existing smart pointer templates and functions already available in the standard library.
+The main difference being that access to the underlying value pointed to is restricted because the class does not
+implement any of the typical pointer accessors.
+
+    T const* operator ->() const;
+    T* operator ->();
+    T const& operator *() const;
+    T& operator*();
+    T const* get() const;
+    T* get();
+
+Instead access to the pointee is provided through some alternative template member functions.
+
+    template <typename Func, template... Args>
+    void call(Func func, Args&&... args) const;
+
+    template <typename Func, template... Args>
+    void call(Func func, Args&&... args);
+
+    template <typename Func, typename Ret, template... Args>
+    Ret call_or(Func func, Ret def, Args&&... args) const;
+
+    template <typename Func, typename Ret, template... Args>
+    Ret call_or(Func func, Ret def, Args&&... args);
+
+If (for the sake of argument) we take the name of this template class to be ptr_guard then usage of this may
+look like the following program fragment.
+
+    Apple apple;
+    ptr_guard<Apple> ptrToApple(&apple);
+    ptrToApple.call(
+        [](const Apple& a) {
+            a.setColor("red");
+        });
+
+    string appleColor = ptrToApple.call_or(
+        [](const Apple& a) {
+            return a.getColor();
+        }, "green");
+
+In addition other arguments may be passed on to such an invocation, including other ptr_guards. Should any of the
+other ptr_guard parameters be NULL then the call will not be made or the default value will be returned. Otherwise
+all the ptr_guard parameters will be de-referenced and passed to the functor provided as a first parameter. Non
+ptr_guard parameters will be passed through directly.
+
+Additionally the more direct function call like syntax is available.
+
+    template <typename Func, template... Args>
+    void call_guarded(Func func, Args&&... args);
+
+    template <typename Func, typename Ret, template... Args>
+    Ret call_guarded_or(Func func, Ret def, Args&&... args);
+
+Which might be used in a similar manner to this.
+
+    Apple apple;
+    ptr_guard<Apple> ptrToApple(&apple);
+    call_guarded([](const Apple& a) {
+            a.setColor("red");
+        }, ptrToApple);
+
+    string appleColor = ptrToApple.call_guarded_or(
+        [](const Apple& a) {
+            return a.getColor();
+        }, "green", ptrToApple);
+
+4. Proposed Wording
+-------------------
+
+Append the following, in namespace std, to [memory.syn]:
+
+// 20.8.x, class template ptr_guard:
+template<class T> class ptr_guard;
+
+// ptr_guard creation:
+template<class T, class... Args> ptr_guard<T> make_guard(Args&&... args);
+
+// ptr_guard specialized algorithms:
+template<class T> void swap(ptr_guard<T>& a, ptr_guard<T>& b) noexcept;
+
+// (in)equality operators
+template <class T1, class T2> bool operator==(ptr_guard<T1>, ptr_guard<T2>);
+template <class T1, class T2> bool operator!=(ptr_guard<T1>, ptr_guard<T2>);
+
+template <class T> bool operator==(observer_ptr<T>, nullptr_t) noexcept;
+template <class T> bool operator!=(observer_ptr<T>, nullptr_t) noexcept;
+template <class T> bool operator==(nullptr_t, observer_ptr<T>) noexcept;
+template <class T> bool operator!=(nullptr_t, observer_ptr<T>) noexcept;
+
+// ordering operators
+template <class T1, class T2> bool operator<(ptr_guard<T1>, ptr_guard<T2>);
+template <class T1, class T2> bool operator>(ptr_guard<T1>, ptr_guard<T2>);
+template <class T1, class T2> bool operator<=(ptr_guard<T1>, ptr_guard<T2>);
+template <class T1, class T2> bool operator>=(ptr_guard<T1>, ptr_guard<T2>);
+
+// ptr_guard functional access invocation:
+template<class F, class... Args> void call_guarded(F f, Args&&... args);
+template<class F, class R, class... Args> R call_guarded_or(F f, R def, Args&&... args);
+
+// ptr_guard casts:
+template<class T, class U> ptr_guard<T> static_pointer_cast(ptr_guard<U> const& r) noexcept;
+template<class T, class U> ptr_guard<T> dynamic_pointer_cast(ptr_guard<U> const& r) noexcept;
+template<class T, class U> ptr_guard<T> const_pointer_cast(ptr_guard<U> const& r) noexcept;
+
+// hash support
+template <class T> struct hash<ptr_guard<T>>;
+
+Create in [smartptr] a new subclause as follows:
+
+20.8.x Pointer guards [util.smartptr.guard]
+
+20.8.x      Class template ptr_guard
+1   A pointer guard is an object which owns a pointer and allows pointer dereferencing only through a valid pointer.
+    More precisely, a pointer guard is an object g that stores a pointer p to a second object h or p may be a nullptr.
+    The pointer guard will allow access to o only when p is pointing to h.
+2   Ownership of h is inherited from the ownership semantics of template parameter pointer p.
+3   Each object of type U instantiated from the ptr_guard template specified in the subclause will have the same MoveConstructable,
+    MoveAssignable, CopyConstructable and CopyAssignable semantics as the template parameter it was instantiated with.
+
+    template <class T>
+    class ptr_guard {
+    public:
+        typedef (see note 4) pointer;
+        typedef (see note 5) element_type;
+
+    public:
+        // 20.8.x, constructors
+        constexpr ptr_guard() noexcept;
+
+        template <class P>
+        ptr_guard(P other) noexcept;
+
+        template <class P>
+        ptr_guard(ptr_guard<P> const& other) noexcept;
+        template <class P>
+        ptr_guard(ptr_guard<P>&& other) noexcept;
+
+        ptr_guard(const ptr_guard& other, see note 6);
+        ptr_guard(ptr_guard&& other, see note 6);
+
+        // 20.8.x, destructor
+        ~ptr_guard();
+
+        // 20.8.x, assignment
+        template <class P>
+        ptr_guard& operator =(P other) noexcept;
+
+        template <class P>
+        ptr_guard& operator =(ptr_guard<P> const& other) noexcept;
+        template <class P>
+        ptr_guard& operator =(ptr_guard<P>&& other) noexcept;
+
+        ptr_guard& operator =(const ptr_guard& other, see note 6) noexcept;
+        ptr_guard& operator =(ptr_guard&& other, see note 6) noexcept;
+
+        // 20.8.x, observers
+        operator bool() const noexcept;
+
+        auto use_count() const noexcept -> (see note 7);
+
+        template<class P>
+        bool owner_before(const P& other) const noexcept;
+        template<class Y>
+        bool owner_before(const ptr_guard<Y>& other) const noexcept;
+
+        template <class Deleter = (see note 8)>
+        Deleter& get_deleter() noexcept;
+
+        template <class Deleter = (see note 8)>
+        const Deleter& get_deleter() const noexcept;
+
+        template <typename L = (see note 9)>
+        auto lock() const noexcept -> ptr_guard<L>;
+
+        void reset() noexcept;
+        void reset(nullptr_t) noexcept;
+        void reset(element_type* value) noexcept;
+
+        void swap(pointer& other) noexcept;
+        void swap(ptr_guard& other) noexcept;
+
+        template <class Func, class... Args>
+        void call(Func&& func, Args&&... args) const;
+
+        template <class Func, class... Args>
+        void call(Func&& func, Args&&... args);
+
+        template <class Func, class Ret, class... Args>
+        Ret call_or(Func&& func, Ret&& def, Args&&... args) const;
+
+        template <class Func, class Ret, class... Args>
+        Ret call_or(Func&& func, Ret&& def, Args&&... args);
+    };
+
+4   If the type remove_reference<T>::type::pointer exists, then ptr_guard<T>::pointer shall be a synonym for
+    remove_reference<T>::type::pointer. Otherwise ptr_guard<T>::pointer shall by a synonym for T*. The type
+    ptr_guard<T>::pointer shall satisfy the requirements of NullablePointer (17.6.3.3).
+5   If the type remove_reference<T>::type::element_type exists, then ptr_guard<T>::element_type shall be a
+    synonym for remove_reference<T>::type::element_type. Otherwise element type shall be a synonym for
+    remove_reference<T>::type.
+6   The copy and move constructors, copy and move assignment operators should exist when the guarded pointer
+    has matching copy and/or move constructors or assignment operators. This probably means these should be
+    compiler generated.
+7   If the method T::use_count exists then ptr_guard<T>::use_count will exist having a matching return type.
+8   If the type ptr_guard<T>::pointer::deleter_type exists then ptr_guard<T>::get_deleter will exist and have
+    ptr_guard<T>::pointer::deleter_type as the return type.
+9   If the method T::lock accepting no arguments exists then ptr_guard<T>::lock will exist having a return
+    type of a ptr_guard template instanciated with the return type of the lock method.
+
+    // 20.8.x ptr_guard constructors
+    constexpr ptr_guard() noexcept;
+1       Requires: T shall satisfy the requirements of DefaultConstructible (Table 19), and that construction
+        shall not throw an exception.
+2       Effects: Constructs a ptr_guard object that guards a default constructed pointer.
+
+    template <class P>
+    ptr_guard(P p) noexcept;
+3       Effects: Equivalent to invoking constructor of the guarded pointer with the parameter p.
+
+    template <class P>
+    ptr_guard(ptr_guard<P> const& other) noexcept;
+4       Effects: Equivalent to invoking the copy constructor on the guarded pointer with the pointer
+        guarded by other.
+
+    template <class P>
+    ptr_guard(ptr_guard<P>&& other) noexcept;
+5       Effects: Equivalent to invoking the move constructor on the guarded pointer with the
+        pointer guarded by other.
+
+    ptr_guard(const ptr_guard& other);
+    ptr_guard(ptr_guard&& other);
+6       Defined where copy and/or move constructors are defined for the guarded pointer. In practice should be
+        implicitely defined by the compiler for an implementation where the guarded pointer is a member
+        variable.
+
+    // ptr_guard destructor
+    ~ptr_guard();
+1       Effects: Equivalent to invoking the destructor of the guarded pointer.
+
+    // 20.8.x ptr_guard assignment
+    template <class P>
+    ptr_guard& operator =(P p) noexcept;
+1       Effects: Equivalent to invoking assignment operator on the guarded pointer with the parameter p.
+
+    template <class P>
+    ptr_guard& operator =(ptr_guard<P> const& other) noexcept;
+2       Effects: Equivalent to invoking copy assignment operator on the guarded pointer with the pointer
+        guarded by other.
+
+    template <class P>
+    ptr_guard& operator =(ptr_guard<P>&& other) noexcept;
+3       Effects: Equivalent to invoking move assignment operator on the guarded pointer with the pointer
+        guarded by other.
+
+    ptr_guard& operator =(const ptr_guard& other) noexcept;
+    ptr_guard& operator =(ptr_guard&& other) noexcept;
+4       Defined where copy and/or move assignment operators are defined for the guarded pointer. In
+        practice should be implicitely defined by the compiler for an implementation where the guarded
+        pointer is a member variable.
+
+    // ptr_guard observers
+    operator bool() const noexcept;
+1       Returns:Equivalent of operator bool on the guarded pointer.
+
+    template <typename L>
+    auto lock() const noexcept -> ptr_guard<L>;
+2       Returns:Equivalent to constructing a ptr_guard on the result of calling lock on the guarded
+        pointer.
+3       Note:Only available if guarded pointer has a lock method accepting no arguments and
+        returning a type for which a pointer guard constructor can be invoked.
+
+    // ptr_guard modifiers
+    void reset(see note 2) noexcept;
+1       Effects:The result of calling reset on the guarded pointer with the same arguments.
+2       Note:Only available if the guarded pointer defines T::reset.
+
+    T* release() noexcept;
+3       Returns:The result of calling release on the guarded pointer.
+4       Note:Only available if the guarded pointer defines T::release.
+
+5. Implementation Choices
+-------------------------
+The pointer tries to maintain most of the underlying semantics of the template parameter. This should
+allow the use of it as a near to drop in replacement for most pointer kinds. This is achieved by
+various mechanisms to add members to the template when certain member functions of the pointer are
+available. In particular with this approach other pointers types outside the standard library may be
+wrapped in the guard and used where they have the same member functions. Specializing the template only
+for standard library smart pointer types would otherwise restrict the re-use of the guard template in
+these circumstances.
+
+One of the important semantics of the template is to maintain the copy and move semantics of the template
+parameter pointer. For this reason the constructors for the pointer guard are not explicit. In particular
+this allows the pointer guard to be wrapped around a function parameter implying that the function safely
+accepts a nullptr value for this parameter.
+
+There is also some breakage in the implementation for guarded pointers which have a release like method
+(in particular the unique_ptr template). In the case of this method being part of the ptr_guard interface
+it becomes possible to repetiviely release() the pointer from the guard, and then later reset it on the
+guard and so escape from the compile time checks that you are dereferencing a valid pointer. More
+generally however its also possible to break out of the guard using the expression,
+
+    Pointee* ptr = guard.call_or([](Pointee& p) -> Pointee* { return &p; }, Pointee*(nullptr));
+
+followed by simply using ptr for further access. The availability of such work arounds
+makes the template a discouragement to bad usage, but not a guarantee against it.
+
+There is a choice with invocation and if parameters to the method call or call_or will be checked and
+de-referenced automatically or if they are forwarded directly. If they are forwarded directly and a chain
+of ptr_guards needs to be checked before invoking some behaviour then this leads to particularly verbose
+syntax. The implementation here is relatively terse (given another lambda is required to make many
+function calls to the pointee).
